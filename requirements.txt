@@ -1,1 +1,1 @@
-streamlit
+pip install streamlit pandas plotly groq fpdf2 openpyxl
