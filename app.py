@@ -11,7 +11,6 @@ import datetime
 st.set_page_config(page_title="Intelligence Hub 2026", layout="wide", page_icon="📈")
 
 # --- AI SETUP (GROQ) ---
-# It's better to store this in Streamlit Secrets (Settings > Secrets) as: GROQ_API_KEY = "your_key"
 GROQ_API_KEY = st.sidebar.text_input("Enter Groq API Key", type="password")
 
 def call_groq(prompt):
@@ -20,7 +19,8 @@ def call_groq(prompt):
     try:
         client = Groq(api_key=GROQ_API_KEY)
         completion = client.chat.completions.create(
-            model="llama3-8b-8192",
+            # UPDATED: Using the current supported model
+            model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
         )
@@ -50,8 +50,6 @@ def init_db():
     conn.close()
 
 def generate_row_hash(row):
-    """Creates a unique ID for a row based on its core data."""
-    # Ensure all parts are strings and cleaned
     data_string = f"{str(row['Trade_Date']).strip()}{str(row['Importer_Name']).strip()}{str(row['Exporter_Name']).strip()}{str(row['Raw_Description']).strip()}{str(row['Value_USD']).strip()}"
     return hashlib.md5(data_string.encode()).hexdigest()
 
@@ -63,11 +61,9 @@ def main():
     menu = ["Upload Data", "Market Insights", "Manage Database"]
     choice = st.sidebar.radio("Navigation", menu)
 
-    # --- PAGE 1: UPLOAD & DEDUPLICATION ---
+    # --- PAGE 1: UPLOAD ---
     if choice == "Upload Data":
         st.title("📥 Data Ingestion")
-        st.write("Upload files. The system skips duplicates from the DB and within the file itself.")
-        
         files = st.file_uploader("Upload Excel/CSV", accept_multiple_files=True, type=['xlsx', 'csv'])
         
         if files:
@@ -85,39 +81,28 @@ def main():
                     val_col = c2.selectbox("Value (USD)", all_cols, key=f"v_{file.name}")
                 
                 if st.button(f"Process {file.name}", key=f"btn_{file.name}"):
-                    # Standardize
                     df_std = df_raw[[date_col, imp_col, exp_col, desc_col, val_col]].copy()
                     df_std.columns = ['Trade_Date', 'Importer_Name', 'Exporter_Name', 'Raw_Description', 'Value_USD']
-                    
-                    # Ensure Value_USD is numeric
                     df_std['Value_USD'] = pd.to_numeric(df_std['Value_USD'], errors='coerce').fillna(0.0)
 
-                    # Get existing hashes from DB
                     conn = sqlite3.connect(DB_NAME)
-                    query = "SELECT Row_Hash FROM TradeData"
                     try:
-                        existing_hashes = set(pd.read_sql(query, conn)['Row_Hash'].tolist())
+                        existing_hashes = set(pd.read_sql("SELECT Row_Hash FROM TradeData", conn)['Row_Hash'].tolist())
                     except:
                         existing_hashes = set()
                     
                     new_rows = []
                     skipped_count = 0
-                    
                     progress_bar = st.progress(0)
                     total_rows = len(df_std)
 
                     for idx, row in df_std.iterrows():
                         row_hash = generate_row_hash(row)
-                        
-                        # Check against DB AND against the current batch we are building
                         if row_hash in existing_hashes:
                             skipped_count += 1
                         else:
-                            # Add to tracking set so we don't add it again in this loop
                             existing_hashes.add(row_hash)
-                            
-                            # AI Logic
-                            ai_prompt = f"Translate technical description to English & Categorize (1-word): '{row['Raw_Description']}'. Format: Translation | Category"
+                            ai_prompt = f"Translate to English & Categorize (1-word): '{row['Raw_Description']}'. Format: Translation | Category"
                             ai_resp = call_groq(ai_prompt)
                             
                             if ai_resp and "|" in ai_resp:
@@ -137,18 +122,13 @@ def main():
                                 "Value_USD": float(row['Value_USD']),
                                 "Source_File": file.name
                             })
-                        
                         progress_bar.progress((idx + 1) / total_rows)
 
                     if new_rows:
-                        try:
-                            upload_df = pd.DataFrame(new_rows)
-                            upload_df.to_sql('TradeData', conn, if_exists='append', index=False)
-                            st.success(f"Added {len(new_rows)} new records. Skipped {skipped_count} duplicates.")
-                        except Exception as e:
-                            st.error(f"Database Save Error: {e}")
+                        pd.DataFrame(new_rows).to_sql('TradeData', conn, if_exists='append', index=False)
+                        st.success(f"Added {len(new_rows)} records. Skipped {skipped_count} duplicates.")
                     else:
-                        st.warning(f"No new data to add from {file.name}.")
+                        st.warning(f"No new data found in {file.name}.")
                     conn.close()
 
     # --- PAGE 2: DASHBOARD ---
@@ -175,24 +155,35 @@ def main():
 
             st.divider()
             st.subheader("💡 Strategic Sales Assistant")
-            strategy_query = st.text_input("What specific strategy do you need?")
+            strategy_query = st.text_input("Ask for a strategy:")
             
             if st.button("Generate Strategy Report"):
                 summary = filtered_df.groupby(['Exporter_Name', 'Category'])['Value_USD'].sum().to_string()
-                prompt = f"Data Summary: {summary}\nFocus: {strategy_query}\nTask: Write a 3-point tactical sales strategy report."
+                prompt = f"Data Summary: {summary}\nFocus: {strategy_query}\nTask: Write a tactical sales strategy report."
                 report = call_groq(prompt)
                 st.markdown(report)
                 
+                # FIXED: PDF Generation for Streamlit Cloud
                 pdf = FPDF()
                 pdf.add_page()
-                pdf.set_font("Arial", 'B', 16)
-                pdf.cell(200, 10, txt="Tactical Market Strategy Report", ln=True, align='C')
+                pdf.set_font("helvetica", 'B', 16)
+                pdf.cell(0, 10, "Tactical Market Strategy Report", new_x="LMARGIN", new_y="NEXT", align='C')
                 pdf.ln(10)
-                pdf.set_font("Arial", size=11)
-                pdf.multi_cell(0, 10, txt=report.encode('latin-1', 'ignore').decode('latin-1'))
+                pdf.set_font("helvetica", size=11)
                 
-                pdf_bytes = pdf.output(dest='S')
-                st.download_button("📥 Download Report (PDF)", data=pdf_bytes, file_name="Market_Strategy.pdf")
+                # Cleaning report text for PDF encoding
+                clean_report = report.encode('latin-1', 'replace').decode('latin-1')
+                pdf.multi_cell(0, 10, txt=clean_report)
+                
+                # UPDATED: fpdf2 output() returns bytes by default
+                pdf_bytes = pdf.output()
+                
+                st.download_button(
+                    label="📥 Download Report (PDF)",
+                    data=bytes(pdf_bytes), # Ensure it is strictly a bytes object
+                    file_name="Market_Strategy.pdf",
+                    mime="application/pdf"
+                )
 
     # --- PAGE 3: ADMIN ---
     elif choice == "Manage Database":
