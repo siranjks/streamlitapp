@@ -19,7 +19,7 @@ MASTER_COLUMNS = [
     "Quantity", "Quantity Unit(EN)", "Total Price(USD)", "Unit Price(USD)"
 ]
 
-DB_NAME = 'market_intelligence.db'
+DB_NAME = 'market_intelligence_v2.db'
 
 # --- 2. AI & DATABASE SETUP ---
 GROQ_API_KEY = st.sidebar.text_input("Enter Groq API Key", type="password")
