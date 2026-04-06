@@ -1,6 +1,6 @@
 streamlit
 pandas
 plotly
-anthropic
+groq
 fpdf2
 openpyxl
