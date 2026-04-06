@@ -100,7 +100,7 @@ def main():
     init_db()
     
     # -- SIDEBAR MENU & RELIABLE BACKUP --
-    st.sidebar.image("[https://upload.wikimedia.org/wikipedia/commons/thumb/c/cb/Rohde_%26_Schwarz_logo.svg/2560px-Rohde_%26_Schwarz_logo.svg.png](https://upload.wikimedia.org/wikipedia/commons/thumb/c/cb/Rohde_%26_Schwarz_logo.svg/2560px-Rohde_%26_Schwarz_logo.svg.png)", width=150)
+    st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/cb/Rohde_%26_Schwarz_logo.svg/2560px-Rohde_%26_Schwarz_logo.svg.png", width=150)
     st.sidebar.title("System Controls")
     
     st.sidebar.divider()
