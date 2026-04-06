@@ -2,18 +2,18 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import plotly.express as px
-import anthropic
+from groq import Groq
 from fpdf import FPDF
 import hashlib
 import datetime
 import re
 import json
 import os
-import io
 
 # --- 1. INITIAL CONFIG & UI OVERHAUL ---
 st.set_page_config(page_title="R&S Intelligence Hub", layout="wide", page_icon="🌐")
 
+# Custom CSS for a clean, professional look
 st.markdown("""
     <style>
     .stTabs [data-baseweb="tab-list"] { gap: 24px; }
@@ -28,13 +28,13 @@ MASTER_COLUMNS = [
     "Quantity", "Quantity Unit(EN)", "Total Price(USD)", "Unit Price(USD)"
 ]
 
-DB_NAME = 'market_intelligence_master.db'
+DB_NAME = 'market_intelligence_v4.db'
 
 # --- 2. API & DATABASE SETUP ---
 try:
-    ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 except:
-    ANTHROPIC_API_KEY = st.sidebar.text_input("Enter Anthropic (Claude) API Key", type="password")
+    GROQ_API_KEY = st.sidebar.text_input("Enter Groq API Key", type="password")
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -53,34 +53,28 @@ def generate_row_hash(row):
     data_string = f"{str(row.get('Declaration Date',''))}{str(row.get('Importer Name(EN)',''))}{str(row.get('Exporter Name(EN)',''))}{str(row.get('Product Description',''))}{str(row.get('Total Price(USD)',''))}"
     return hashlib.md5(data_string.encode()).hexdigest()
 
-# --- 3. CLAUDE AI ENGINES ---
-def claude_clean_companies(company_list):
-    """Uses Claude 3.5 Sonnet to aggressively hunt down typos and group companies."""
-    if not ANTHROPIC_API_KEY or not company_list: return {}
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+# --- 3. GROQ AI ENGINES ---
+def aggressive_ai_clean(company_list):
+    """Uses Groq to aggressively hunt down typos and group companies."""
+    if not GROQ_API_KEY or not company_list: return {}
+    client = Groq(api_key=GROQ_API_KEY)
     
     prompt = f"""
-    You are an expert data cleaner for Rohde & Schwarz. 
-    Analyze this exact list of messy company names extracted from customs data.
-    Your job is to identify severe typos (e.g., 'ronde', 'rohde and', 'keysight:', 'anritsu corp', misspelled variations) and group them into a SINGLE, clean, lowercase master entity name (e.g., 'rohde & schwarz', 'keysight', 'anritsu').
-    
-    CRITICAL: Output ONLY a valid JSON dictionary where the keys are the exact messy original names, and the values are the clean master names. Do not include markdown blocks (```json) or any other text.
-    
-    List to clean: {company_list}
+    You are an expert data cleaner. Analyze this list of messy company names.
+    Identify typos (e.g., 'ronde', 'keysight:', 'anritsu corp') and group them into a SINGLE, clean, lowercase master entity name.
+    Output ONLY a valid JSON dictionary mapping the messy original name to the clean master name.
+    List: {company_list}
     """
     try:
-        response = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=4000,
-            temperature=0.0, # Zero creativity, maximum logic
-            messages=[{"role": "user", "content": prompt}]
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.1
         )
-        content = response.content[0].text
-        # Safety extraction to ensure we only grab the JSON
-        json_str = content[content.find('{'):content.rfind('}')+1]
-        return json.loads(json_str)
+        return json.loads(completion.choices[0].message.content)
     except Exception as e:
-        st.error(f"Claude API Error during cleaning: {e}")
+        st.error(f"Groq API Error during cleaning: {e}")
         return {}
 
 def apply_model_db_rules(df, model_db):
@@ -100,6 +94,7 @@ def main():
     init_db()
     
     # -- SIDEBAR MENU & RELIABLE BACKUP --
+    # FIXED: Using clean, raw URL string to prevent formatting crashes
     st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/thumb/c/cb/Rohde_%26_Schwarz_logo.svg/2560px-Rohde_%26_Schwarz_logo.svg.png", width=150)
     st.sidebar.title("System Controls")
     
@@ -123,8 +118,8 @@ def main():
 
     # --- TAB 1: INGESTION ---
     with tab1:
-        st.header("Automated Ingestion Pipeline")
-        st.markdown("Powered by Claude 3.5 Sonnet. Automatically resolves typos like 'Ronde', maps standard models, and deduplicates records.")
+        st.header("Automated Ingestion Pipeline (Groq Powered)")
+        st.markdown("Upload your Excel sheets. Groq AI will resolve typos, map models, and deduplicate records.")
         
         with st.container(border=True):
             col1, col2 = st.columns(2)
@@ -159,16 +154,15 @@ def main():
                     # Apply manual model rules
                     df = apply_model_db_rules(df, model_db)
                     
-                    # CLAUDE AI TYPO FIXING
-                    with st.spinner(f"Claude 3.5 analyzing rows and repairing company names in {file.name}..."):
-                        # Extract unique Exporters (Send chunks to avoid token limits)
+                    # GROQ AI TYPO FIXING (Chunked to prevent token overflow)
+                    with st.spinner(f"Groq analyzing rows and repairing company names in {file.name}..."):
                         unique_exporters = df['Exporter Name(EN)'].dropna().astype(str).unique().tolist()
-                        # We chunk by 150 names at a time to give Claude room to think
                         exp_map = {}
-                        for i in range(0, len(unique_exporters), 150):
-                            chunk = unique_exporters[i:i+150]
-                            chunk_map = claude_clean_companies(chunk)
-                            exp_map.update(chunk_map)
+                        # Process in chunks of 50 to keep JSON output clean and fast
+                        for i in range(0, len(unique_exporters), 50):
+                            chunk = unique_exporters[i:i+50]
+                            chunk_map = aggressive_ai_clean(chunk)
+                            if chunk_map: exp_map.update(chunk_map)
                         
                         if exp_map: 
                             df['Exporter Name(EN)'] = df['Exporter Name(EN)'].replace(exp_map)
@@ -237,25 +231,24 @@ def main():
                               x='Product Category', y='Total Price(USD)', title="Revenue by Hardware Category", color='Product Category')
                 st.plotly_chart(fig2, use_container_width=True)
 
-            # --- CLAUDE STRATEGY GENERATOR ---
-            with st.expander("🤖 Generate Claude AI Strategy Report", expanded=True):
+            # --- GROQ STRATEGY GENERATOR ---
+            with st.expander("🤖 Generate Groq AI Strategy Report", expanded=True):
                 user_query = st.text_input("Enter tactical focus (e.g., 'How do we combat Anritsu in this dataset?'):")
                 
-                if st.button("Generate & Download PDF") and ANTHROPIC_API_KEY:
-                    with st.spinner("Claude is analyzing patterns and drafting your PDF..."):
-                        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                if st.button("Generate & Download PDF") and GROQ_API_KEY:
+                    with st.spinner("Groq is analyzing patterns and drafting your PDF..."):
+                        client = Groq(api_key=GROQ_API_KEY)
                         summary = plot_df.groupby(['Exporter Name(EN)', 'Product Category'])['Total Price(USD)'].sum().to_string()
                         
                         prompt = f"Data: {summary}\nFocus: {user_query}\nWrite a professional, 3-point tactical sales strategy report for Rohde & Schwarz. Format clearly."
                         
                         try:
-                            response = client.messages.create(
-                                model="claude-3-5-sonnet-20241022",
-                                max_tokens=1000,
-                                temperature=0.3,
-                                messages=[{"role": "user", "content": prompt}]
+                            response = client.chat.completions.create(
+                                model="llama-3.3-70b-versatile",
+                                messages=[{"role": "user", "content": prompt}],
+                                temperature=0.3
                             )
-                            report_text = response.content[0].text
+                            report_text = response.choices[0].message.content
                             st.markdown(report_text)
                             
                             # Bulletproof PDF Generation
@@ -265,11 +258,12 @@ def main():
                             pdf.cell(0, 10, "R&S Tactical Strategy Report", new_x="LMARGIN", new_y="NEXT", align='C')
                             pdf.ln(5)
                             pdf.set_font("helvetica", size=11)
+                            
                             # Encode properly to prevent crash on weird characters
                             safe_text = report_text.encode('latin-1', 'replace').decode('latin-1')
                             pdf.multi_cell(0, 8, txt=safe_text)
                             
-                            # Use BytesIO to ensure a perfect binary file stream for Streamlit Cloud
+                            # Use Bytes to ensure a perfect binary file stream for Streamlit Cloud
                             pdf_bytes = bytes(pdf.output())
                             
                             st.download_button(
